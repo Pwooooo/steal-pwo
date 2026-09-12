@@ -1,4 +1,4 @@
--- Steal An Egg | PWO (Linoria) v2 - guard-aware
+-- Steal An Egg | PWO (Linoria) v3 - hop-travel + real-prompt carry
 -- Fixes: trap-eject + guard kills. Collect = guard-distance precheck, instant in-out, IsTrapped sentinel.
 -- Place: Steal An Egg (107778070777162)
 
@@ -208,20 +208,83 @@ local function eggSafeToGrab(rec, guards)
     return gd > (hit + gs * 0.3), gd
 end
 
+local HOP_DIST = 20
+local function hopTo(targetCF)
+    local char = LocalPlayer.Character
+    if not char then return false end
+    local guard = 0
+    while guard < 100 do
+        guard = guard + 1
+        local cur = char:GetPivot()
+        local to = targetCF.Position - cur.Position
+        if to.Magnitude <= HOP_DIST then
+            char:PivotTo(targetCF)
+            return true
+        end
+        char:PivotTo(CFrame.new(cur.Position + to.Unit * HOP_DIST))
+        task.wait(0.03)
+    end
+    return false
+end
+
+local function findEggPrompt(rec)
+    local bestP, bestD = nil, 20
+    local function scan(container)
+        for _, d in ipairs(container:GetDescendants()) do
+            if d:IsA("ProximityPrompt") and d.Enabled then
+                local par = d.Parent
+                local pp = nil
+                if par then
+                    if par:IsA("BasePart") then
+                        pp = par.Position
+                    else
+                        local okP, cf = pcall(function() return par:GetPivot() end)
+                        if okP and typeof(cf) == "CFrame" then pp = cf.Position end
+                    end
+                end
+                if pp then
+                    local dd = (pp - rec.BoundsCFrame.Position).Magnitude
+                    if dd < bestD then bestD = dd bestP = d end
+                end
+            end
+        end
+    end
+    local slots = Workspace:FindFirstChild("AreaEggSlotsClient")
+    if slots then scan(slots) end
+    if not bestP then scan(Workspace) end
+    return bestP
+end
+
+-- v3 collect: hop-travel (beats 25-stud snap-back), fire the egg's REAL prompt
+-- (beats area-flag rejection), hop back. No lingering = no guard deaths.
 local function carryEggFast(rec, safeCF)
     local char = LocalPlayer.Character
-    if not char then return false, "no char" end
-    local slotKey = nil
-    pcall(function()
-        if SlotIdentity.LooksLikeFirstAreaUid(rec.Uid) then
-            slotKey = SlotIdentity.SlotKey(rec.AreaId, rec.NestId)
-        end
-    end)
-    -- in: directly above egg. carry SAME tick (beats trap eject). out: back to safe.
-    char:PivotTo(rec.BoundsCFrame + Vector3.new(0, 3, 0))
-    local r1, r2 = EggState.CarryFieldEgg(rec.Uid, slotKey)
-    char:PivotTo(safeCF)
-    return r1, r2
+    if not char then return false end
+    if not hopTo(rec.BoundsCFrame + Vector3.new(0, 4, 0)) then return false end
+    task.wait(0.35)
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hum and hum.Health <= 0 then return false end
+    local pr = findEggPrompt(rec)
+    local fired = false
+    if pr then
+        pcall(function() pr.HoldDuration = 0 end)
+        task.wait(0.05)
+        local okF = pcall(function() fireproximityprompt(pr) end)
+        fired = okF
+        if okF then task.wait(0.4) end
+    else
+        -- fallback: direct remote (may be rejected, harmless)
+        local slotKey = nil
+        pcall(function()
+            if SlotIdentity.LooksLikeFirstAreaUid(rec.Uid) then
+                slotKey = SlotIdentity.SlotKey(rec.AreaId, rec.NestId)
+            end
+        end)
+        local r1 = EggState.CarryFieldEgg(rec.Uid, slotKey)
+        fired = (r1 == true)
+    end
+    hopTo(safeCF)
+    return fired
 end
 
 local function setEggStatus()
@@ -597,5 +660,5 @@ ThemeManager:ApplyToTab(Tabs.Settings)
 SaveManager:BuildConfigSection(Tabs.Settings)
 SaveManager:LoadAutoloadConfig()
 
-Library:Notify("Steal An Egg v2 loaded | PWO", 3)
-print("PWO Steal An Egg v2 loaded")
+Library:Notify("Steal An Egg v3 loaded | PWO", 3)
+print("PWO Steal An Egg v3 loaded")
