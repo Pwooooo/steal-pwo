@@ -1,4 +1,4 @@
--- Steal An Egg | PWO (Linoria) v6 - instant return home + real-prompt carry (proven live)
+-- Steal An Egg | PWO (Linoria) v7 - sources merged + real-prompt carry (proven live)
 -- Fixes: trap-eject + guard kills. Collect = guard-distance precheck, instant in-out, IsTrapped sentinel.
 -- Place: Steal An Egg (107778070777162)
 
@@ -50,7 +50,83 @@ local function guardStat(area)
     return 100, 5
 end
 
+﻿-- v7 bypasses merged from sources/: validate hook + knockback disconnect
+local function gcFindValidate()
+    local found = nil
+    pcall(function()
+        for _, f in next, getgc() do
+            if typeof(f) == 'function' and islclosure and islclosure(f) then
+                local okUv, upvs = pcall(debug.getupvalues, f)
+                local okLn, line = pcall(debug.info, f, 'l')
+                if okUv and okLn and upvs and #upvs == 19 and line == 605 then
+                    local okT, tv = pcall(debug.getupvalue, f, 3)
+                    if okT and typeof(tv) == 'table' and rawget(tv, 'Humanoid') then
+                        found = f
+                        break
+                    end
+                end
+            end
+        end
+    end)
+    return found
+end
+
+local function setSpeedBypass(on)
+    speedBypassOn = on
+    if on then
+        if typeof(getgc) ~= 'function' or typeof(hookfunction) ~= 'function' or typeof(islclosure) ~= 'function' then
+            Library:Notify('Bypass needs getgc + hookfunction + islclosure', 3)
+            return
+        end
+        local nlc = newlclosure or function(fn) return fn end
+        local target = gcFindValidate()
+        if not target then Library:Notify('Validate fn not found (already hooked?)', 3) return end
+        local okUv, v7 = pcall(debug.getupvalue, target, 2)
+        if not okUv or not v7 then Library:Notify('Validate upvalue missing', 3) return end
+        local orig = nil
+        local okH = pcall(function()
+            orig = hookfunction(v7, nlc(function(p1, p2)
+                if p2 and typeof(p2) == 'table' then pcall(setmetatable, p2, {}) end
+                return orig(p1, p2)
+            end))
+        end)
+        if okH and orig then
+            bypassV7ref = v7
+            bypassOrigValidate = orig
+            Library:Notify('Speed Bypass: ON (validate hooked)', 3)
+        else
+            Library:Notify('Speed Bypass hook failed', 3)
+        end
+    else
+        if bypassV7ref and bypassOrigValidate then
+            pcall(hookfunction, bypassV7ref, bypassOrigValidate)
+            bypassV7ref = nil
+            bypassOrigValidate = nil
+        end
+        Library:Notify('Speed Bypass: OFF (hook restored)', 2)
+    end
+end
+
+local function disableKnockback()
+    if knockbackOff then Library:Notify('Knockback already off', 2) return end
+    if typeof(getconnections) ~= 'function' then
+        Library:Notify('Knockback needs getconnections', 3)
+        return
+    end
+    local re = Networking:FindFirstChild('RE/RigSync/Refresh')
+    if not re then Library:Notify('RigSync remote missing', 3) return end
+    local ok, conns = pcall(function() return getconnections(re.OnClientEvent) end)
+    if not ok or type(conns) ~= 'table' then Library:Notify('No connections found', 3) return end
+    local n = 0
+    for _, c in ipairs(conns) do
+        if pcall(function() c:Disconnect() end) then n = n + 1 end
+    end
+    knockbackOff = true
+    Library:Notify('Knockback OFF (' .. n .. ' cut, rejoin to undo)', 3)
+end
+
 local Library = loadstring(game:HttpGet("https://raw.githubusercontent.com/mstudio45/LinoriaLib/main/Library.lua"))()
+
 local ThemeManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/mstudio45/LinoriaLib/main/addons/ThemeManager.lua"))()
 local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/mstudio45/LinoriaLib/main/addons/SaveManager.lua"))()
 
@@ -66,6 +142,7 @@ local Tabs = {
     Main = Window:AddTab("Main"),
     Eggs = Window:AddTab("Eggs"),
     Shop = Window:AddTab("Auto Buy"),
+    Sell = Window:AddTab("Sell"),
     Settings = Window:AddTab("Settings"),
 }
 
@@ -91,6 +168,15 @@ local killAuraConn = nil
 local killLast = 0
 local autoBuy = false
 local autoBuyThread = nil
+local speedBypassOn = false
+local bypassV7ref = nil
+local bypassOrigValidate = nil
+local knockbackOff = false
+local travelSpeedValue = 430
+local targetMode = 'Nearest'
+local autoSell = false
+local autoSellThread = nil
+local sellSet = {Common = true, Uncommon = true, Rare = true}
 
 local WORLDS = {"All", "Abyss Ocean", "Cherry Blossom", "Cosmic", "Desert", "Forest", "Jungle", "Lake", "Prehistoric", "Snow", "Titan Temple", "Volcano"}
 local RARITIES = {"All", "Common", "Uncommon", "Rare", "Epic", "Legendary", "Mythic", "Cosmic", "Divine", "Eternal", "Secret"}
@@ -238,7 +324,7 @@ local function walkTo(targetPos, timeoutS)
     for _, pt in ipairs(char:GetDescendants()) do
         if pt:IsA("BasePart") then origCollide[pt] = pt.CanCollide pt.CanCollide = false end
     end
-    local travelSpeed = math.max(walkSpeedValue, 250)
+    local travelSpeed = math.max(walkSpeedValue, travelSpeedValue)
     hum.WalkSpeed = travelSpeed
     local t0 = os.clock()
     local lastD, stuckT = math.huge, os.clock()
@@ -246,9 +332,16 @@ local function walkTo(targetPos, timeoutS)
     while os.clock() - t0 < (timeoutS or 30) do
         if hum.Health <= 0 then break end
         hum.WalkSpeed = travelSpeed
-        hum:MoveTo(targetPos)
+        do
+            local start = char:GetPivot().Position
+            local to = targetPos - start
+            local step = to.Magnitude
+            if step < 8 then arrived = true break end
+            hum:MoveTo(start + to.Unit * math.min(step, travelSpeed * 0.05))
+        end
+        task.wait(0.05)
         local d = (char:GetPivot().Position - targetPos).Magnitude
-        if d < 10 then arrived = true break end
+        if d < 8 then arrived = true break end
         if math.abs(d - lastD) < 1 then
             if os.clock() - stuckT > 2 then hum.Jump = true stuckT = os.clock() end
         else
@@ -261,7 +354,24 @@ local function walkTo(targetPos, timeoutS)
 end
 
 local function findEggPrompt(rec)
-    local bestP, bestD = nil, 20
+    local bestP, bestD = nil, 25
+    pcall(function()
+        for _, pr in ipairs(Workspace:QueryDescendants('#CarryAreaEgg')) do
+            if pr:IsA('ProximityPrompt') and pr.Enabled then
+                local par = pr.Parent
+                local pp = nil
+                if par then
+                    if par:IsA('BasePart') then pp = par.Position
+                    else local okP, cf = pcall(function() return par:GetPivot() end) if okP and typeof(cf) == 'CFrame' then pp = cf.Position end end
+                end
+                if pp then
+                    local dd = (pp - rec.BoundsCFrame.Position).Magnitude
+                    if dd < bestD then bestD = dd bestP = pr end
+                end
+            end
+        end
+    end)
+    if bestP then return bestP end
     local function scan(container)
         for _, d in ipairs(container:GetDescendants()) do
             if d:IsA("ProximityPrompt") and d.Enabled then
@@ -364,8 +474,13 @@ local function startCollect()
                         for _, rec in pairs(snap.Records) do
                             if type(rec) == "table" and rec.Uid and rec.BoundsCFrame and rec.State == "Slot" and recordMatches(rec) then
                                 if nearestGuardDist(rec.BoundsCFrame.Position, guards) > 6 then
-                                    local d = (rec.BoundsCFrame.Position - fromPos).Magnitude
-                                    if d < bestDist then bestDist = d best = rec end
+                                    local score
+                                    if targetMode == 'Biggest' then
+                                        score = -(tonumber(rec.AssetScale) or 0)
+                                    else
+                                        score = (rec.BoundsCFrame.Position - fromPos).Magnitude
+                                    end
+                                    if score < bestDist then bestDist = score best = rec end
                                 else
                                     eggsSkippedGuard = eggsSkippedGuard + 1
                                 end
@@ -488,6 +603,8 @@ local Bases = require(ReplicatedStorage.Data:WaitForChild("Bases"))
 local RF_TrailBuy = Networking:FindFirstChild("RF/Trailwear/AskPurchase")
 local RF_TreadBuy = Networking:FindFirstChild("RF/Treadmill/AskTierRaise")
 local RE_BaseBuy = Networking:FindFirstChild("RE/Homestead/AskBaseTierRaise")
+local RF_WearTool = Networking:FindFirstChild("RF/EggWorld/AskWearTool")
+local RE_SellPet = Networking:FindFirstChild("RE/PetSatchel/SellPet")
 
 local function canAfford(m, c)
     local s, r = pcall(function() return m >= c end)
@@ -574,6 +691,23 @@ RightMain:AddToggle("EnforceSpeed", {
     Tooltip = "Keeps WalkSpeed locked (game resets it)",
     Callback = function(v) enforceSpeed = v end,
 })
+RightMain:AddToggle("SpeedBypass", {
+    Text = "Speed Bypass (hook)",
+    Default = false,
+    Tooltip = "Hooks move validator so high speed survives (from sources)",
+    Callback = function(v) setSpeedBypass(v) end,
+})
+RightMain:AddButton("Disable Knockback", function()
+    disableKnockback()
+end)
+RightMain:AddSlider("TravelSpeed", {
+    Text = "Travel Speed",
+    Default = 430,
+    Min = 100,
+    Max = 500,
+    Rounding = 0,
+    Callback = function(v) travelSpeedValue = v end,
+})
 RightMain:AddDivider()
 RightMain:AddToggle("Fly", {
     Text = "Fly",
@@ -622,6 +756,14 @@ LeftEggs:AddDropdown("CollectRarity", {
     Text = "Rarity",
     Tooltip = "Only collect eggs of this rarity",
     Callback = function(v) collectRarity = v end,
+})
+LeftEggs:AddDropdown("TargetMode", {
+    Values = {"Nearest", "Biggest"},
+    Default = 1,
+    Multi = false,
+    Text = "Target",
+    Tooltip = "Nearest = closest egg. Biggest = largest scale (best loot)",
+    Callback = function(v) targetMode = v end,
 })
 eggStatusLabel = LeftEggs:AddLabel("Collected: 0 | Skipped (guard): 0")
 
@@ -709,6 +851,54 @@ LeftShop:AddToggle("AutoBuy", {
 })
 LeftShop:AddLabel("Buys cheapest affordable upgrades first.\nRuns every 0.5s while ON.")
 
+local LeftSell = Tabs.Sell:AddLeftGroupbox("Auto Sell")
+LeftSell:AddToggle("AutoSell", {
+    Text = "Auto Sell Pets",
+    Default = false,
+    Tooltip = "Sells pets matching rarities every 1s",
+    Callback = function(v)
+        autoSell = v
+        if v then startAutoSell() Library:Notify("Auto Sell: ON", 2)
+        else
+            if autoSellThread then task.cancel(autoSellThread) autoSellThread = nil end
+            Library:Notify("Auto Sell: OFF", 2)
+        end
+    end,
+})
+LeftSell:AddDropdown("SellRarities", {
+    Values = {"Common", "Uncommon", "Rare", "Epic", "Legendary", "Mythic", "Cosmic", "Divine", "Eternal", "Secret"},
+    Default = {"Common", "Uncommon", "Rare"},
+    Multi = true,
+    Text = "Sell rarities",
+    Callback = function(v) sellSet = v end,
+})
+
+local function startAutoSell()
+    if autoSellThread then task.cancel(autoSellThread) autoSellThread = nil end
+    autoSellThread = task.spawn(function()
+        while autoSell do
+            local ok, d = pcall(Save.Get)
+            if ok and type(d) == "table" and type(d.EggInventory) == "table" then
+                for uid, ed in pairs(d.EggInventory) do
+                    if not autoSell then break end
+                    if type(ed) == "table" and not ed.Placement then
+                        local rar = nil
+                        pcall(function()
+                            rar = AssetsDir[ed.AssetCategory].Rarity.DisplayName
+                        end)
+                        if rar and sellSet[rar] then
+                            pcall(function() RF_WearTool:InvokeServer(uid) end)
+                            pcall(function() RE_SellPet:FireServer({uid}) end)
+                            task.wait(0.1)
+                        end
+                    end
+                end
+            end
+            task.wait(1)
+        end
+    end)
+end
+
 local MenuGroup = Tabs.Settings:AddLeftGroupbox("Menu")
 MenuGroup:AddButton("Unload", function()
     autoCollect = false
@@ -716,12 +906,14 @@ MenuGroup:AddButton("Unload", function()
     instantPickup = false
     killAura = false
     autoBuy = false
+    autoSell = false
     flyEnabled = false
     stopFly()
     if collectThread then task.cancel(collectThread) end
     if instantThread then task.cancel(instantThread) end
     if killAuraConn then killAuraConn:Disconnect() end
     if autoBuyThread then task.cancel(autoBuyThread) end
+    if autoSellThread then task.cancel(autoSellThread) end
     Library:Unload()
 end)
 MenuGroup:AddLabel("Menu bind"):AddKeyPicker("MenuKeybind", { Default = "RightShift", NoUI = true, Text = "Menu keybind" })
@@ -737,5 +929,5 @@ ThemeManager:ApplyToTab(Tabs.Settings)
 SaveManager:BuildConfigSection(Tabs.Settings)
 SaveManager:LoadAutoloadConfig()
 
-Library:Notify("Steal An Egg v6 loaded | PWO", 3)
-print("PWO Steal An Egg v6 loaded")
+Library:Notify("Steal An Egg v7 merged | PWO", 3)
+print("PWO Steal An Egg v7 loaded")
