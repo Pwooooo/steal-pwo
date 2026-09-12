@@ -50,7 +50,7 @@ local function guardStat(area)
     return 100, 5
 end
 
-ï»¿-- v7 bypasses merged from sources/: validate hook + knockback disconnect
+-- v7 bypasses merged from sources/: validate hook + knockback disconnect
 local function gcFindValidate()
     local found = nil
     pcall(function()
