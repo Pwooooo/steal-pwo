@@ -1,8 +1,7 @@
--- Steal An Egg | PWO (Linoria)
--- Features: Anti-Ban, Speed Changer, Fly, Auto Collect Eggs (World + Rarity), Kill Aura, Auto Buy, Instant Pickup
+-- Steal An Egg | PWO (Linoria) v2 - guard-aware
+-- Fixes: trap-eject + guard kills. Collect = guard-distance precheck, instant in-out, IsTrapped sentinel.
 -- Place: Steal An Egg (107778070777162)
 
--- Anti-Ban / anti-detection (runs once at startup)
 pcall(function()
     if typeof(getgc) ~= "function" then return end
     for _, obj in getgc(true) do
@@ -35,7 +34,22 @@ local SlotIdentity = require(ReplicatedStorage.Shared.Util:WaitForChild("AreaEgg
 local AssetsDir = require(ReplicatedStorage.Data:WaitForChild("Assets")).Directory
 local Save = require(ReplicatedStorage.Shared:WaitForChild("Save"))
 
--- Linoria
+-- Guard data (live from game configs: WalkSpeed + HitDistance per area)
+local GuardCfg = {}
+pcall(function()
+    for _, m in ipairs(ReplicatedStorage.Data.Guards.Configs:GetChildren()) do
+        local ok, cfg = pcall(require, m)
+        if ok and type(cfg) == "table" and cfg.WalkSpeed then
+            GuardCfg[m.Name] = { speed = tonumber(cfg.WalkSpeed) or 60, hit = tonumber(cfg.HitDistance) or 5 }
+        end
+    end
+end)
+local function guardStat(area)
+    local g = GuardCfg[area]
+    if g then return g.speed, g.hit end
+    return 100, 5
+end
+
 local Library = loadstring(game:HttpGet("https://raw.githubusercontent.com/mstudio45/LinoriaLib/main/Library.lua"))()
 local ThemeManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/mstudio45/LinoriaLib/main/addons/ThemeManager.lua"))()
 local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/mstudio45/LinoriaLib/main/addons/SaveManager.lua"))()
@@ -66,6 +80,8 @@ local collectWorld = "All"
 local collectRarity = "All"
 local collectThread = nil
 local eggsCollected = 0
+local eggsSkippedGuard = 0
+local eggStatusLabel = nil
 local instantPickup = false
 local instantThread = nil
 local killAura = false
@@ -89,6 +105,33 @@ local function getChar()
     local c = LocalPlayer.Character
     if not c then return nil, nil end
     return c, c:FindFirstChildOfClass("Humanoid")
+end
+
+local function isTrapped()
+    local c = LocalPlayer.Character
+    return c and c:GetAttribute("IsTrapped") == true
+end
+
+-- Guard positions (cheap scan, ~12 models)
+local function guardPositions()
+    local out = {}
+    for _, d in ipairs(Workspace:GetDescendants()) do
+        if d:IsA("Model") and (d.Name == "Guard" or d.Name:find("GuardAuthored")) then
+            local h = d:FindFirstChild("HumanoidRootPart") or d.PrimaryPart
+            if h then table.insert(out, h.Position) end
+        end
+        if #out >= 20 then break end
+    end
+    return out
+end
+
+local function nearestGuardDist(pos, guards)
+    local nd = math.huge
+    for _, gp in ipairs(guards) do
+        local d = (gp - pos).Magnitude
+        if d < nd then nd = d end
+    end
+    return nd
 end
 
 -- Speed enforcer (Heartbeat, no signal recursion)
@@ -150,7 +193,7 @@ LocalPlayer.CharacterAdded:Connect(function()
     if flyEnabled then task.wait(0.5) startFly() end
 end)
 
--- Egg collect
+-- Egg collect v2: guard precheck + instant in-out + trap sentinel
 local function recordMatches(rec)
     if collectWorld ~= "All" and rec.AreaId ~= collectWorld then return false end
     if collectRarity ~= "All" then
@@ -159,24 +202,34 @@ local function recordMatches(rec)
     return true
 end
 
-local function carryEgg(rec)
+local function eggSafeToGrab(rec, guards)
+    local gs, hit = guardStat(rec.AreaId)
+    local gd = nearestGuardDist(rec.BoundsCFrame.Position, guards)
+    return gd > (hit + gs * 0.3), gd
+end
+
+local function carryEggFast(rec, safeCF)
+    local char = LocalPlayer.Character
+    if not char then return false, "no char" end
     local slotKey = nil
     pcall(function()
         if SlotIdentity.LooksLikeFirstAreaUid(rec.Uid) then
             slotKey = SlotIdentity.SlotKey(rec.AreaId, rec.NestId)
         end
     end)
-    local char = LocalPlayer.Character
-    if char and typeof(rec.BoundsCFrame) == "CFrame" then
+    -- in: directly above egg. carry SAME tick (beats trap eject). out: back to safe.
+    char:PivotTo(rec.BoundsCFrame + Vector3.new(0, 3, 0))
+    local r1, r2 = EggState.CarryFieldEgg(rec.Uid, slotKey)
+    char:PivotTo(safeCF)
+    return r1, r2
+end
+
+local function setEggStatus()
+    if eggStatusLabel then
         pcall(function()
-            char:PivotTo(rec.BoundsCFrame + Vector3.new(0, 4, 0))
+            eggStatusLabel:SetText("Collected: " .. eggsCollected .. " | Skipped (guard): " .. eggsSkippedGuard)
         end)
-        task.wait(0.08)
     end
-    local ok, res = pcall(function()
-        return EggState.CarryFieldEgg(rec.Uid, slotKey)
-    end)
-    return ok and res
 end
 
 local function startCollect()
@@ -184,38 +237,45 @@ local function startCollect()
     collectThread = task.spawn(function()
         local snapRF = Networking:FindFirstChild("RF/EggWorld/AskFieldEggSnapshot")
         while autoCollect do
-            local ok, snap = pcall(function() return snapRF:InvokeServer() end)
-            if ok and type(snap) == "table" and type(snap.Records) == "table" then
-                local best, bestDist = nil, math.huge
-                local myPos = nil
-                pcall(function()
-                    myPos = LocalPlayer.Character:GetPivot().Position
-                end)
-                for _, rec in pairs(snap.Records) do
-                    if type(rec) == "table" and rec.Uid and rec.BoundsCFrame and recordMatches(rec) then
-                        if myPos and typeof(rec.BoundsCFrame) == "CFrame" then
-                            local d = (rec.BoundsCFrame.Position - myPos).Magnitude
-                            if d < bestDist then bestDist = d best = rec end
-                        else
-                            best = rec
-                            break
-                        end
-                    end
-                end
-                if best then
-                    local got = carryEgg(best)
-                    if got then
-                        eggsCollected = eggsCollected + 1
-                        pcall(function()
-                            Options.EggStatus:SetText("Collected: " .. eggsCollected)
-                        end)
-                    end
-                    task.wait(0.25)
-                else
-                    task.wait(0.6)
-                end
+            if isTrapped() then
+                task.wait(2)
             else
-                task.wait(1)
+                local char = LocalPlayer.Character
+                local safeCF = char and char:GetPivot()
+                if safeCF then
+                    local ok, snap = pcall(function() return snapRF:InvokeServer() end)
+                    if ok and type(snap) == "table" and type(snap.Records) == "table" then
+                        local guards = guardPositions()
+                        local best, bestDist = nil, math.huge
+                        local bestGuardD = 0
+                        for _, rec in pairs(snap.Records) do
+                            if type(rec) == "table" and rec.Uid and rec.BoundsCFrame and rec.State == "Slot" and recordMatches(rec) then
+                                local safe, gd = eggSafeToGrab(rec, guards)
+                                if safe then
+                                    local d = (rec.BoundsCFrame.Position - safeCF.Position).Magnitude
+                                    if d < bestDist then bestDist = d best = rec bestGuardD = gd end
+                                else
+                                    eggsSkippedGuard = eggsSkippedGuard + 1
+                                end
+                            end
+                        end
+                        if best then
+                            local r1 = carryEggFast(best, safeCF)
+                            if r1 then
+                                eggsCollected = eggsCollected + 1
+                            end
+                            setEggStatus()
+                            task.wait(0.4)
+                        else
+                            setEggStatus()
+                            task.wait(0.8)
+                        end
+                    else
+                        task.wait(1)
+                    end
+                else
+                    task.wait(1)
+                end
             end
         end
     end)
@@ -229,8 +289,7 @@ local function startInstant()
             pcall(function()
                 for _, d in ipairs(Workspace:GetDescendants()) do
                     if d:IsA("ProximityPrompt") and d.HoldDuration > 0 then
-                        local f = d:GetFullName()
-                        if f:find("Egg") then
+                        if d:GetFullName():find("Egg") then
                             d.HoldDuration = 0
                         end
                     end
@@ -421,10 +480,10 @@ local LeftEggs = Tabs.Eggs:AddLeftGroupbox("Auto Collect")
 LeftEggs:AddToggle("AutoCollect", {
     Text = "Auto Collect Eggs",
     Default = false,
-    Tooltip = "Teleports to matching field eggs and carries them instantly",
+    Tooltip = "Guard-aware: skips guarded eggs, instant in-out, returns to safe spot",
     Callback = function(v)
         autoCollect = v
-        if v then startCollect() Library:Notify("Auto Collect: ON", 2)
+        if v then startCollect() Library:Notify("Auto Collect: ON (guard-aware)", 2)
         else
             if collectThread then task.cancel(collectThread) collectThread = nil end
             Library:Notify("Auto Collect: OFF", 2)
@@ -447,7 +506,7 @@ LeftEggs:AddDropdown("CollectRarity", {
     Tooltip = "Only collect eggs of this rarity",
     Callback = function(v) collectRarity = v end,
 })
-LeftEggs:AddLabel("EggStatus", "Collected: 0")
+eggStatusLabel = LeftEggs:AddLabel("Collected: 0 | Skipped (guard): 0")
 
 local RightEggs = Tabs.Eggs:AddRightGroupbox("Pickup")
 RightEggs:AddToggle("InstantPickup", {
@@ -464,28 +523,34 @@ RightEggs:AddToggle("InstantPickup", {
     end,
 })
 RightEggs:AddButton("Collect Nearest Now", function()
+    local char = LocalPlayer.Character
+    local safeCF = char and char:GetPivot()
+    if not safeCF then return end
     local ok, snap = pcall(function()
         return Networking:FindFirstChild("RF/EggWorld/AskFieldEggSnapshot"):InvokeServer()
     end)
     if not (ok and type(snap) == "table") then Library:Notify("Snapshot failed", 2) return end
+    local guards = guardPositions()
     local best, bestDist = nil, math.huge
-    local myPos = LocalPlayer.Character and LocalPlayer.Character:GetPivot().Position
     for _, rec in pairs(snap.Records or {}) do
-        if type(rec) == "table" and rec.Uid and rec.BoundsCFrame and recordMatches(rec) then
-            local d = myPos and (rec.BoundsCFrame.Position - myPos).Magnitude or 0
-            if d < bestDist then bestDist = d best = rec end
+        if type(rec) == "table" and rec.Uid and rec.BoundsCFrame and rec.State == "Slot" and recordMatches(rec) then
+            local safe, _ = eggSafeToGrab(rec, guards)
+            if safe then
+                local d = (rec.BoundsCFrame.Position - safeCF.Position).Magnitude
+                if d < bestDist then bestDist = d best = rec end
+            end
         end
     end
     if best then
-        if carryEgg(best) then
+        if carryEggFast(best, safeCF) then
             eggsCollected = eggsCollected + 1
-            Options.EggStatus:SetText("Collected: " .. eggsCollected)
+            if eggStatusLabel then eggStatusLabel:SetText("Collected: " .. eggsCollected .. " | Skipped (guard): " .. eggsSkippedGuard) end
             Library:Notify("Collected 1 egg", 2)
         else
-            Library:Notify("Carry failed", 2)
+            Library:Notify("Carry rejected (guard moved?)", 2)
         end
     else
-        Library:Notify("No matching eggs", 2)
+        Library:Notify("No safe matching eggs", 2)
     end
 end)
 
@@ -532,5 +597,5 @@ ThemeManager:ApplyToTab(Tabs.Settings)
 SaveManager:BuildConfigSection(Tabs.Settings)
 SaveManager:LoadAutoloadConfig()
 
-Library:Notify("Steal An Egg loaded | PWO", 3)
-print("PWO Steal An Egg v1 loaded")
+Library:Notify("Steal An Egg v2 loaded | PWO", 3)
+print("PWO Steal An Egg v2 loaded")
