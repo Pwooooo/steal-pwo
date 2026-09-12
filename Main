@@ -52,23 +52,44 @@ end
 
 -- v7 bypasses merged from sources/: validate hook + knockback disconnect
 local function gcFindValidate()
-    local found = nil
+    local exact, fallback, fallbackDesc = nil, nil, nil
     pcall(function()
         for _, f in next, getgc() do
             if typeof(f) == 'function' and islclosure and islclosure(f) then
                 local okUv, upvs = pcall(debug.getupvalues, f)
-                local okLn, line = pcall(debug.info, f, 'l')
-                if okUv and okLn and upvs and #upvs == 19 and line == 605 then
-                    local okT, tv = pcall(debug.getupvalue, f, 3)
-                    if okT and typeof(tv) == 'table' and rawget(tv, 'Humanoid') then
-                        found = f
-                        break
+                if okUv and type(upvs) == 'table' then
+                    local nuv = 0
+                    local hasHum = false
+                    for _, uv in pairs(upvs) do
+                        nuv = nuv + 1
+                        if type(uv) == 'table' and rawget(uv, 'Humanoid') then hasHum = true end
+                    end
+                    if hasHum then
+                        local okLn, line = pcall(debug.info, f, 'l')
+                        if nuv == 19 and okLn and line == 605 then
+                            exact = f
+                            break
+                        elseif not fallback and nuv >= 17 and nuv <= 20 then
+                            local score = 0
+                            local okC, consts = pcall(debug.getconstants, f)
+                            if okC and type(consts) == 'table' then
+                                for _, c in ipairs(consts) do
+                                    if type(c) == 'string' and (c:find('strict') or c:find('econcile') or c:find('alid')) then
+                                        score = score + 1
+                                    end
+                                end
+                            end
+                            local okN, nm = pcall(debug.info, f, 'n')
+                            fallback = f
+                            fallbackDesc = 'upv=' .. nuv .. ' line=' .. tostring(okLn and line) .. ' fn=' .. tostring(okN and nm) .. ' hints=' .. score
+                        end
                     end
                 end
             end
         end
     end)
-    return found
+    if exact then return exact, 'exact(19@605)' end
+    return fallback, fallbackDesc
 end
 
 local function setSpeedBypass(on)
@@ -79,8 +100,8 @@ local function setSpeedBypass(on)
             return
         end
         local nlc = newlclosure or function(fn) return fn end
-        local target = gcFindValidate()
-        if not target then Library:Notify('Validate fn not found (already hooked?)', 3) return end
+        local target, desc = gcFindValidate()
+        if not target then Library:Notify('Validate fn not found for this build', 3) return end
         local okUv, v7 = pcall(debug.getupvalue, target, 2)
         if not okUv or not v7 then Library:Notify('Validate upvalue missing', 3) return end
         local orig = nil
@@ -93,7 +114,7 @@ local function setSpeedBypass(on)
         if okH and orig then
             bypassV7ref = v7
             bypassOrigValidate = orig
-            Library:Notify('Speed Bypass: ON (validate hooked)', 3)
+            Library:Notify('Speed Bypass: ON (' .. tostring(desc) .. ')', 3)
         else
             Library:Notify('Speed Bypass hook failed', 3)
         end
