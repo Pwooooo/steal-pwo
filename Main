@@ -1,4 +1,4 @@
--- Steal An Egg | PWO (Linoria) v5 - one-egg gate + real-prompt carry (proven live)
+-- Steal An Egg | PWO (Linoria) v6 - instant return home + real-prompt carry (proven live)
 -- Fixes: trap-eject + guard kills. Collect = guard-distance precheck, instant in-out, IsTrapped sentinel.
 -- Place: Steal An Egg (107778070777162)
 
@@ -290,27 +290,24 @@ end
 
 -- v3 collect: hop-travel (beats 25-stud snap-back), fire the egg's REAL prompt
 -- (beats area-flag rejection), hop back. No lingering = no guard deaths.
--- v4 collect: walk in (server-synced) -> fire real prompt -> chain to next egg
-local function carryEggWalk(rec)
+-- v6 collect: walk in -> fire real prompt -> INSTANT walk home (zero post-fire wait)
+local function carryEggWalk(rec, homePos)
     local char = LocalPlayer.Character
     if not char then return false end
     if not walkTo(rec.BoundsCFrame.Position, 30) then return false end
-    task.wait(0.3)
+    task.wait(0.2)
     local hum = char:FindFirstChildOfClass("Humanoid")
     if hum and hum.Health <= 0 then return false end
     local pr = findEggPrompt(rec)
     local fired = false
     if pr then
         pcall(function() pr.HoldDuration = 0 end)
-        task.wait(0.05)
-        local okF = pcall(function() fireproximityprompt(pr) end)
-        fired = okF
-        if okF then task.wait(0.4) end
-    else
-        return false
+        fired = pcall(function() fireproximityprompt(pr) end)
     end
+    if homePos then walkTo(homePos, 25) end
     return fired
 end
+
 
 local function setEggStatus()
     if eggStatusLabel then
@@ -375,8 +372,7 @@ local function startCollect()
                             end
                         end
                         if best and handsFree() then
-                            if carryEggWalk(best) then
-                                task.wait(0.5)
+                            if carryEggWalk(best, collectHome and collectHome.Position or nil) then
                                 if readCarryState(best.Uid) == 'Carried' then
                                     carryingUid = best.Uid
                                     carrySince = os.clock()
@@ -384,7 +380,6 @@ local function startCollect()
                                 end
                             end
                             setEggStatus()
-                            task.wait(0.3)
                         else
                             setEggStatus()
                             if collectHome and (collectHome.Position - fromPos).Magnitude > 30 then
@@ -668,8 +663,7 @@ RightEggs:AddButton("Collect Nearest Now", function()
         return
     end
     if best then
-        if carryEggWalk(best) then
-            task.wait(0.5)
+        if carryEggWalk(best, homeCF.Position) then
             if readCarryState(best.Uid) == 'Carried' then
                 carryingUid = best.Uid
                 carrySince = os.clock()
@@ -682,7 +676,6 @@ RightEggs:AddButton("Collect Nearest Now", function()
         else
             Library:Notify("Carry rejected (guard moved?)", 2)
         end
-        walkTo(homeCF.Position, 20)
     else
         Library:Notify("No safe matching eggs", 2)
     end
@@ -744,5 +737,5 @@ ThemeManager:ApplyToTab(Tabs.Settings)
 SaveManager:BuildConfigSection(Tabs.Settings)
 SaveManager:LoadAutoloadConfig()
 
-Library:Notify("Steal An Egg v5 loaded | PWO", 3)
-print("PWO Steal An Egg v5 loaded")
+Library:Notify("Steal An Egg v6 loaded | PWO", 3)
+print("PWO Steal An Egg v6 loaded")
