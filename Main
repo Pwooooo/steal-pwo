@@ -1,4 +1,4 @@
--- Steal An Egg | PWO (Linoria) v4 - walk-travel + real-prompt carry (proven live)
+-- Steal An Egg | PWO (Linoria) v5 - one-egg gate + real-prompt carry (proven live)
 -- Fixes: trap-eject + guard kills. Collect = guard-distance precheck, instant in-out, IsTrapped sentinel.
 -- Place: Steal An Egg (107778070777162)
 
@@ -82,6 +82,8 @@ local collectThread = nil
 local eggsCollected = 0
 local eggsSkippedGuard = 0
 local eggStatusLabel = nil
+local carryingUid = nil
+local carrySince = 0
 local instantPickup = false
 local instantThread = nil
 local killAura = false
@@ -313,9 +315,35 @@ end
 local function setEggStatus()
     if eggStatusLabel then
         pcall(function()
-            eggStatusLabel:SetText("Collected: " .. eggsCollected .. " | Skipped (guard): " .. eggsSkippedGuard)
+            eggStatusLabel:SetText("Collected: " .. eggsCollected .. " | Skipped (guard): " .. eggsSkippedGuard .. (carryingUid and " | HOLDING" or ""))
         end)
     end
+end
+
+-- v5: one egg at a time. Hands busy while our carried egg still reads Carried.
+local function readCarryState(uid)
+    local st = nil
+    pcall(function()
+        local rec = EggState.ReadFieldEgg(uid)
+        if type(rec) == 'table' then st = rec.State end
+    end)
+    return st
+end
+
+local function handsFree()
+    if carryingUid == nil then return true end
+    if os.clock() - carrySince > 120 then carryingUid = nil return true end
+    local st = readCarryState(carryingUid)
+    if st == nil or st ~= 'Carried' then carryingUid = nil return true end
+    return false
+end
+
+local function dropCarried()
+    if carryingUid == nil then return false end
+    local ok = pcall(function() EggState.DropFieldEgg('PlayerRequest') end)
+    carryingUid = nil
+    setEggStatus()
+    return ok
 end
 
 local collectHome = nil
@@ -346,9 +374,14 @@ local function startCollect()
                                 end
                             end
                         end
-                        if best then
+                        if best and handsFree() then
                             if carryEggWalk(best) then
-                                eggsCollected = eggsCollected + 1
+                                task.wait(0.5)
+                                if readCarryState(best.Uid) == 'Carried' then
+                                    carryingUid = best.Uid
+                                    carrySince = os.clock()
+                                    eggsCollected = eggsCollected + 1
+                                end
                             end
                             setEggStatus()
                             task.wait(0.3)
@@ -630,11 +663,22 @@ RightEggs:AddButton("Collect Nearest Now", function()
             end
         end
     end
+    if not handsFree() then
+        Library:Notify("Already holding an egg - drop/hatch it first", 3)
+        return
+    end
     if best then
         if carryEggWalk(best) then
-            eggsCollected = eggsCollected + 1
-            if eggStatusLabel then eggStatusLabel:SetText("Collected: " .. eggsCollected .. " | Skipped (guard): " .. eggsSkippedGuard) end
-            Library:Notify("Collected 1 egg", 2)
+            task.wait(0.5)
+            if readCarryState(best.Uid) == 'Carried' then
+                carryingUid = best.Uid
+                carrySince = os.clock()
+                eggsCollected = eggsCollected + 1
+                setEggStatus()
+                Library:Notify("Collected 1 egg", 2)
+            else
+                Library:Notify("Carry rejected (guard moved?)", 2)
+            end
         else
             Library:Notify("Carry rejected (guard moved?)", 2)
         end
@@ -642,6 +686,18 @@ RightEggs:AddButton("Collect Nearest Now", function()
     else
         Library:Notify("No safe matching eggs", 2)
     end
+end)
+RightEggs:AddButton("Drop Carried Egg", function()
+    if dropCarried() then
+        Library:Notify("Dropped held egg - hands free", 2)
+    else
+        Library:Notify("Nothing to drop", 2)
+    end
+end)
+RightEggs:AddButton("Reset Carry State", function()
+    carryingUid = nil
+    setEggStatus()
+    Library:Notify("Carry state reset", 2)
 end)
 
 local LeftShop = Tabs.Shop:AddLeftGroupbox("Auto Buy")
@@ -663,6 +719,7 @@ LeftShop:AddLabel("Buys cheapest affordable upgrades first.\nRuns every 0.5s whi
 local MenuGroup = Tabs.Settings:AddLeftGroupbox("Menu")
 MenuGroup:AddButton("Unload", function()
     autoCollect = false
+    carryingUid = nil
     instantPickup = false
     killAura = false
     autoBuy = false
@@ -687,5 +744,5 @@ ThemeManager:ApplyToTab(Tabs.Settings)
 SaveManager:BuildConfigSection(Tabs.Settings)
 SaveManager:LoadAutoloadConfig()
 
-Library:Notify("Steal An Egg v4 loaded | PWO", 3)
-print("PWO Steal An Egg v4 loaded")
+Library:Notify("Steal An Egg v5 loaded | PWO", 3)
+print("PWO Steal An Egg v5 loaded")
