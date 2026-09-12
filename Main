@@ -1,1 +1,536 @@
+-- Steal An Egg | PWO (Linoria)
+-- Features: Anti-Ban, Speed Changer, Fly, Auto Collect Eggs (World + Rarity), Kill Aura, Auto Buy, Instant Pickup
+-- Place: Steal An Egg (107778070777162)
 
+-- Anti-Ban / anti-detection (runs once at startup)
+pcall(function()
+    if typeof(getgc) ~= "function" then return end
+    for _, obj in getgc(true) do
+        if typeof(obj) ~= "table" or getrawmetatable(obj) then continue end
+        local mainrun = false
+        for _, v in obj do
+            if v == obj then mainrun = true break end
+        end
+        if not mainrun then continue end
+        for _, v in obj do
+            if typeof(v) == "number" and v >= 1 and v <= 3 and obj[v] == nil then
+                setmetatable(obj, {__newindex = function() end})
+                break
+            end
+        end
+    end
+end)
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
+
+local LocalPlayer = Players.LocalPlayer
+local Networking = ReplicatedStorage:WaitForChild("Packages"):WaitForChild("Networking")
+
+local EggState = require(ReplicatedStorage:WaitForChild("Client"):WaitForChild("EggState"))
+local SlotIdentity = require(ReplicatedStorage.Shared.Util:WaitForChild("AreaEggSlotIdentity"))
+local AssetsDir = require(ReplicatedStorage.Data:WaitForChild("Assets")).Directory
+local Save = require(ReplicatedStorage.Shared:WaitForChild("Save"))
+
+-- Linoria
+local Library = loadstring(game:HttpGet("https://raw.githubusercontent.com/mstudio45/LinoriaLib/main/Library.lua"))()
+local ThemeManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/mstudio45/LinoriaLib/main/addons/ThemeManager.lua"))()
+local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/mstudio45/LinoriaLib/main/addons/SaveManager.lua"))()
+
+local Window = Library:CreateWindow({
+    Title = "Steal An Egg | PWO",
+    Center = true,
+    AutoShow = true,
+    TabPadding = 8,
+    MenuFadeTime = 0.2,
+})
+
+local Tabs = {
+    Main = Window:AddTab("Main"),
+    Eggs = Window:AddTab("Eggs"),
+    Shop = Window:AddTab("Auto Buy"),
+    Settings = Window:AddTab("Settings"),
+}
+
+-- State
+local walkSpeedValue = 16
+local enforceSpeed = true
+local flyEnabled = false
+local flySpeed = 60
+local flyGyro, flyVel, flyConn = nil, nil, nil
+local autoCollect = false
+local collectWorld = "All"
+local collectRarity = "All"
+local collectThread = nil
+local eggsCollected = 0
+local instantPickup = false
+local instantThread = nil
+local killAura = false
+local killAuraConn = nil
+local killLast = 0
+local autoBuy = false
+local autoBuyThread = nil
+
+local WORLDS = {"All", "Abyss Ocean", "Cherry Blossom", "Cosmic", "Desert", "Forest", "Jungle", "Lake", "Prehistoric", "Snow", "Titan Temple", "Volcano"}
+local RARITIES = {"All", "Common", "Uncommon", "Rare", "Epic", "Legendary", "Mythic", "Cosmic", "Divine", "Eternal", "Secret"}
+
+local function getRarityOf(category)
+    local cfg = category and AssetsDir[category]
+    if type(cfg) == "table" and type(cfg.Rarity) == "table" then
+        return tostring(cfg.Rarity._id or cfg.Rarity.DisplayName or "?")
+    end
+    return "?"
+end
+
+local function getChar()
+    local c = LocalPlayer.Character
+    if not c then return nil, nil end
+    return c, c:FindFirstChildOfClass("Humanoid")
+end
+
+-- Speed enforcer (Heartbeat, no signal recursion)
+RunService.Heartbeat:Connect(function()
+    if enforceSpeed and walkSpeedValue ~= 16 then
+        local _, hum = getChar()
+        if hum and hum.WalkSpeed ~= walkSpeedValue then
+            hum.WalkSpeed = walkSpeedValue
+        end
+    end
+end)
+
+-- Fly
+local function startFly()
+    local char, hum = getChar()
+    if not char or not hum then return end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+    stopFly()
+    flyGyro = Instance.new("BodyGyro")
+    flyGyro.P = 90000
+    flyGyro.MaxTorque = Vector3.new(9e9, 9e9, 9e9)
+    flyGyro.CFrame = hrp.CFrame
+    flyGyro.Parent = hrp
+    flyVel = Instance.new("BodyVelocity")
+    flyVel.MaxForce = Vector3.new(9e9, 9e9, 9e9)
+    flyVel.Velocity = Vector3.new(0, 0, 0)
+    flyVel.Parent = hrp
+    hum.PlatformStand = true
+    flyConn = RunService.Heartbeat:Connect(function()
+        if not flyEnabled then return end
+        local c, h = getChar()
+        if not c or not h then return end
+        local root = c:FindFirstChild("HumanoidRootPart")
+        if not root or not flyGyro or not flyVel then return end
+        local cam = Workspace.CurrentCamera
+        local dir = Vector3.new(0, 0, 0)
+        if UserInputService:IsKeyDown(Enum.KeyCode.W) then dir = dir + cam.CFrame.LookVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.S) then dir = dir - cam.CFrame.LookVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.D) then dir = dir + cam.CFrame.RightVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.A) then dir = dir - cam.CFrame.RightVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.Space) then dir = dir + Vector3.new(0, 1, 0) end
+        if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then dir = dir - Vector3.new(0, 1, 0) end
+        if dir.Magnitude > 0 then dir = dir.Unit * flySpeed else dir = Vector3.new(0, 0, 0) end
+        flyVel.Velocity = dir
+        flyGyro.CFrame = cam.CFrame
+    end)
+end
+
+function stopFly()
+    if flyConn then flyConn:Disconnect() flyConn = nil end
+    if flyGyro then flyGyro:Destroy() flyGyro = nil end
+    if flyVel then flyVel:Destroy() flyVel = nil end
+    local _, hum = getChar()
+    if hum then hum.PlatformStand = false end
+end
+
+LocalPlayer.CharacterAdded:Connect(function()
+    if flyEnabled then task.wait(0.5) startFly() end
+end)
+
+-- Egg collect
+local function recordMatches(rec)
+    if collectWorld ~= "All" and rec.AreaId ~= collectWorld then return false end
+    if collectRarity ~= "All" then
+        if getRarityOf(rec.AssetCategory) ~= collectRarity then return false end
+    end
+    return true
+end
+
+local function carryEgg(rec)
+    local slotKey = nil
+    pcall(function()
+        if SlotIdentity.LooksLikeFirstAreaUid(rec.Uid) then
+            slotKey = SlotIdentity.SlotKey(rec.AreaId, rec.NestId)
+        end
+    end)
+    local char = LocalPlayer.Character
+    if char and typeof(rec.BoundsCFrame) == "CFrame" then
+        pcall(function()
+            char:PivotTo(rec.BoundsCFrame + Vector3.new(0, 4, 0))
+        end)
+        task.wait(0.08)
+    end
+    local ok, res = pcall(function()
+        return EggState.CarryFieldEgg(rec.Uid, slotKey)
+    end)
+    return ok and res
+end
+
+local function startCollect()
+    if collectThread then task.cancel(collectThread) collectThread = nil end
+    collectThread = task.spawn(function()
+        local snapRF = Networking:FindFirstChild("RF/EggWorld/AskFieldEggSnapshot")
+        while autoCollect do
+            local ok, snap = pcall(function() return snapRF:InvokeServer() end)
+            if ok and type(snap) == "table" and type(snap.Records) == "table" then
+                local best, bestDist = nil, math.huge
+                local myPos = nil
+                pcall(function()
+                    myPos = LocalPlayer.Character:GetPivot().Position
+                end)
+                for _, rec in pairs(snap.Records) do
+                    if type(rec) == "table" and rec.Uid and rec.BoundsCFrame and recordMatches(rec) then
+                        if myPos and typeof(rec.BoundsCFrame) == "CFrame" then
+                            local d = (rec.BoundsCFrame.Position - myPos).Magnitude
+                            if d < bestDist then bestDist = d best = rec end
+                        else
+                            best = rec
+                            break
+                        end
+                    end
+                end
+                if best then
+                    local got = carryEgg(best)
+                    if got then
+                        eggsCollected = eggsCollected + 1
+                        pcall(function()
+                            Options.EggStatus:SetText("Collected: " .. eggsCollected)
+                        end)
+                    end
+                    task.wait(0.25)
+                else
+                    task.wait(0.6)
+                end
+            else
+                task.wait(1)
+            end
+        end
+    end)
+end
+
+-- Instant pickup: zero HoldDuration on egg prompts
+local function startInstant()
+    if instantThread then task.cancel(instantThread) instantThread = nil end
+    instantThread = task.spawn(function()
+        while instantPickup do
+            pcall(function()
+                for _, d in ipairs(Workspace:GetDescendants()) do
+                    if d:IsA("ProximityPrompt") and d.HoldDuration > 0 then
+                        local f = d:GetFullName()
+                        if f:find("Egg") then
+                            d.HoldDuration = 0
+                        end
+                    end
+                end
+            end)
+            task.wait(1)
+        end
+    end)
+end
+
+-- Kill aura (BatSwing)
+local batRemote = Networking:FindFirstChild("RE/BatSwing/Trigger")
+local toolGuard = nil
+pcall(function()
+    toolGuard = require(ReplicatedStorage:WaitForChild("Client"):WaitForChild("ToolGameplayGuard"))
+end)
+
+local function makeSeed()
+    local s, r = pcall(function()
+        return ("%*:%*:%*"):format(LocalPlayer.UserId, 100, math.floor(Workspace:GetServerTimeNow() * 1000))
+    end)
+    if s and r then return r end
+    return nil
+end
+
+local function canUseTool()
+    local s, r = pcall(function()
+        local c = LocalPlayer.Character
+        if not c then return false end
+        local t = c:FindFirstChildOfClass("Tool")
+        if not t or t:GetAttribute("ItemType") ~= "Gear" then return false end
+        local h = c:FindFirstChild("HumanoidRootPart")
+        if not h then return false end
+        if toolGuard and not toolGuard.IsLocalInsideArena() then return false end
+        if Workspace:GetAttribute("Event_MonsterEvent") then
+            if h and -268 < h.Position.Z then return true end
+            return false
+        else
+            return true
+        end
+    end)
+    if s and r then return r end
+    return false
+end
+
+local function getClosestPlayer()
+    local target, dist = nil, 16.5
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p == LocalPlayer then continue end
+        local char = p.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            local d = LocalPlayer:DistanceFromCharacter(hrp.Position)
+            if d < dist then dist = d target = p end
+        end
+    end
+    return target
+end
+
+local function startKillAura()
+    if killAuraConn then killAuraConn:Disconnect() killAuraConn = nil end
+    killLast = tick()
+    killAuraConn = RunService.Heartbeat:Connect(function()
+        if not killAura then return end
+        local target = getClosestPlayer()
+        if target and tick() - killLast >= 0.1 and canUseTool() then
+            pcall(function()
+                batRemote:FireServer(target, makeSeed())
+            end)
+            killLast = tick()
+        end
+    end)
+end
+
+-- Auto buy (treadmills + trails + base)
+local Treadmills = require(ReplicatedStorage.Data:WaitForChild("Treadmills"))
+local Trails = require(ReplicatedStorage.Data:WaitForChild("Trails"))
+local Bases = require(ReplicatedStorage.Data:WaitForChild("Bases"))
+local RF_TrailBuy = Networking:FindFirstChild("RF/Trailwear/AskPurchase")
+local RF_TreadBuy = Networking:FindFirstChild("RF/Treadmill/AskTierRaise")
+local RE_BaseBuy = Networking:FindFirstChild("RE/Homestead/AskBaseTierRaise")
+
+local function canAfford(m, c)
+    local s, r = pcall(function() return m >= c end)
+    if s and r then return r end
+    return false
+end
+
+local function startAutoBuy()
+    if autoBuyThread then task.cancel(autoBuyThread) autoBuyThread = nil end
+    autoBuyThread = task.spawn(function()
+        while autoBuy do
+            local ok, d = pcall(Save.Get)
+            if ok and type(d) == "table" then
+                pcall(function()
+                    for _, trial in pairs(Trails.Directory) do
+                        if not autoBuy then break end
+                        if not d.TrailInventory[trial._id] and canAfford(d.Money, trial.Price) then
+                            RF_TrailBuy:InvokeServer(trial._id)
+                            task.wait(0.1)
+                        end
+                    end
+                end)
+                pcall(function()
+                    local lvl = d.TreadmillUpgradeLevel
+                    for id, t in pairs(Treadmills.Directory) do
+                        if not autoBuy then break end
+                        if Treadmills.GetUpgradeLevel(id) > lvl and canAfford(d.Money, t.Price) then
+                            RF_TreadBuy:InvokeServer(id)
+                            task.wait(0.1)
+                        end
+                    end
+                end)
+                pcall(function()
+                    local next_ = Bases.BASES[d.BaseUpgradeLevel + 1]
+                    if next_ and canAfford(d.Money, next_.Cost) then
+                        RE_BaseBuy:FireServer()
+                    end
+                end)
+            end
+            task.wait(0.5)
+        end
+    end)
+end
+
+-- UI
+local LeftMain = Tabs.Main:AddLeftGroupbox("Combat")
+LeftMain:AddToggle("KillAura", {
+    Text = "Kill Aura (Bat)",
+    Default = false,
+    Tooltip = "Auto swings bat at players within 16.5 studs (needs Gear equipped, in arena)",
+    Callback = function(v)
+        killAura = v
+        if v then
+            if not batRemote then
+                Library:Notify("Bat remote missing", 3)
+                return
+            end
+            startKillAura()
+            Library:Notify("Kill Aura: ON", 2)
+        else
+            if killAuraConn then killAuraConn:Disconnect() killAuraConn = nil end
+            Library:Notify("Kill Aura: OFF", 2)
+        end
+    end,
+})
+
+local RightMain = Tabs.Main:AddRightGroupbox("Movement")
+RightMain:AddSlider("WalkSpeed", {
+    Text = "Speed Changer",
+    Default = 16,
+    Min = 16,
+    Max = 300,
+    Rounding = 0,
+    Suffix = " ws",
+    Callback = function(v)
+        walkSpeedValue = v
+        local _, hum = getChar()
+        if hum then hum.WalkSpeed = v end
+    end,
+})
+RightMain:AddToggle("EnforceSpeed", {
+    Text = "Enforce Speed",
+    Default = true,
+    Tooltip = "Keeps WalkSpeed locked (game resets it)",
+    Callback = function(v) enforceSpeed = v end,
+})
+RightMain:AddDivider()
+RightMain:AddToggle("Fly", {
+    Text = "Fly",
+    Default = false,
+    Callback = function(v)
+        flyEnabled = v
+        if v then startFly() Library:Notify("Fly: ON (WASD + Space/Ctrl)", 2)
+        else stopFly() Library:Notify("Fly: OFF", 2) end
+    end,
+})
+RightMain:AddSlider("FlySpeed", {
+    Text = "Fly Speed",
+    Default = 60,
+    Min = 10,
+    Max = 300,
+    Rounding = 0,
+    Callback = function(v) flySpeed = v end,
+})
+
+local LeftEggs = Tabs.Eggs:AddLeftGroupbox("Auto Collect")
+LeftEggs:AddToggle("AutoCollect", {
+    Text = "Auto Collect Eggs",
+    Default = false,
+    Tooltip = "Teleports to matching field eggs and carries them instantly",
+    Callback = function(v)
+        autoCollect = v
+        if v then startCollect() Library:Notify("Auto Collect: ON", 2)
+        else
+            if collectThread then task.cancel(collectThread) collectThread = nil end
+            Library:Notify("Auto Collect: OFF", 2)
+        end
+    end,
+})
+LeftEggs:AddDropdown("CollectWorld", {
+    Values = WORLDS,
+    Default = 1,
+    Multi = false,
+    Text = "World",
+    Tooltip = "Only collect eggs from this world",
+    Callback = function(v) collectWorld = v end,
+})
+LeftEggs:AddDropdown("CollectRarity", {
+    Values = RARITIES,
+    Default = 1,
+    Multi = false,
+    Text = "Rarity",
+    Tooltip = "Only collect eggs of this rarity",
+    Callback = function(v) collectRarity = v end,
+})
+LeftEggs:AddLabel("EggStatus", "Collected: 0")
+
+local RightEggs = Tabs.Eggs:AddRightGroupbox("Pickup")
+RightEggs:AddToggle("InstantPickup", {
+    Text = "Instant Egg Pickup",
+    Default = false,
+    Tooltip = "Removes hold time on egg prompts",
+    Callback = function(v)
+        instantPickup = v
+        if v then startInstant() Library:Notify("Instant Pickup: ON", 2)
+        else
+            if instantThread then task.cancel(instantThread) instantThread = nil end
+            Library:Notify("Instant Pickup: OFF", 2)
+        end
+    end,
+})
+RightEggs:AddButton("Collect Nearest Now", function()
+    local ok, snap = pcall(function()
+        return Networking:FindFirstChild("RF/EggWorld/AskFieldEggSnapshot"):InvokeServer()
+    end)
+    if not (ok and type(snap) == "table") then Library:Notify("Snapshot failed", 2) return end
+    local best, bestDist = nil, math.huge
+    local myPos = LocalPlayer.Character and LocalPlayer.Character:GetPivot().Position
+    for _, rec in pairs(snap.Records or {}) do
+        if type(rec) == "table" and rec.Uid and rec.BoundsCFrame and recordMatches(rec) then
+            local d = myPos and (rec.BoundsCFrame.Position - myPos).Magnitude or 0
+            if d < bestDist then bestDist = d best = rec end
+        end
+    end
+    if best then
+        if carryEgg(best) then
+            eggsCollected = eggsCollected + 1
+            Options.EggStatus:SetText("Collected: " .. eggsCollected)
+            Library:Notify("Collected 1 egg", 2)
+        else
+            Library:Notify("Carry failed", 2)
+        end
+    else
+        Library:Notify("No matching eggs", 2)
+    end
+end)
+
+local LeftShop = Tabs.Shop:AddLeftGroupbox("Auto Buy")
+LeftShop:AddToggle("AutoBuy", {
+    Text = "Auto Buy (Trails + Treadmills + Base)",
+    Default = false,
+    Tooltip = "Buys affordable trails, treadmill tiers and base upgrades",
+    Callback = function(v)
+        autoBuy = v
+        if v then startAutoBuy() Library:Notify("Auto Buy: ON", 2)
+        else
+            if autoBuyThread then task.cancel(autoBuyThread) autoBuyThread = nil end
+            Library:Notify("Auto Buy: OFF", 2)
+        end
+    end,
+})
+LeftShop:AddLabel("Buys cheapest affordable upgrades first.\nRuns every 0.5s while ON.")
+
+local MenuGroup = Tabs.Settings:AddLeftGroupbox("Menu")
+MenuGroup:AddButton("Unload", function()
+    autoCollect = false
+    instantPickup = false
+    killAura = false
+    autoBuy = false
+    flyEnabled = false
+    stopFly()
+    if collectThread then task.cancel(collectThread) end
+    if instantThread then task.cancel(instantThread) end
+    if killAuraConn then killAuraConn:Disconnect() end
+    if autoBuyThread then task.cancel(autoBuyThread) end
+    Library:Unload()
+end)
+MenuGroup:AddLabel("Menu bind"):AddKeyPicker("MenuKeybind", { Default = "RightShift", NoUI = true, Text = "Menu keybind" })
+Library.ToggleKeybind = Options.MenuKeybind
+
+ThemeManager:SetLibrary(Library)
+SaveManager:SetLibrary(Library)
+SaveManager:IgnoreThemeSettings()
+SaveManager:SetIgnoreIndexes({ "MenuKeybind" })
+ThemeManager:SetFolder("PWO_StealEgg")
+SaveManager:SetFolder("PWO_StealEgg")
+ThemeManager:ApplyToTab(Tabs.Settings)
+SaveManager:BuildConfigSection(Tabs.Settings)
+SaveManager:LoadAutoloadConfig()
+
+Library:Notify("Steal An Egg loaded | PWO", 3)
+print("PWO Steal An Egg v1 loaded")
