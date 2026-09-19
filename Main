@@ -1,4 +1,4 @@
--- Steal An Egg | PWO (Linoria) v9 - new speed code only (old enforcer deleted)
+-- Steal An Egg | PWO (Linoria) v10 - speed bypass auto-on (no toggle)
 -- Fixes: trap-eject + guard kills. Collect = guard-distance precheck, instant in-out, IsTrapped sentinel.
 -- Place: Steal An Egg (107778070777162)
 
@@ -733,12 +733,6 @@ RightMain:AddSlider("WalkSpeed", {
         if hum then hum.WalkSpeed = speedBypassLock end
     end,
 })
-RightMain:AddToggle("SpeedBypass", {
-    Text = "Speed Bypass (hook)",
-    Default = false,
-    Tooltip = "Hooks move validator so high speed survives (from sources)",
-    Callback = function(v) setSpeedBypass(v) end,
-})
 RightMain:AddButton("Disable Knockback", function()
     disableKnockback()
 end)
@@ -958,6 +952,7 @@ MenuGroup:AddButton("Unload", function()
     if killAuraConn then killAuraConn:Disconnect() end
     if autoBuyThread then task.cancel(autoBuyThread) end
     if autoSellThread then task.cancel(autoSellThread) end
+    pcall(function() setSpeedBypass(false) end)
     Library:Unload()
 end)
 MenuGroup:AddLabel("Menu bind"):AddKeyPicker("MenuKeybind", { Default = "RightShift", NoUI = true, Text = "Menu keybind" })
@@ -973,5 +968,9 @@ ThemeManager:ApplyToTab(Tabs.Settings)
 SaveManager:BuildConfigSection(Tabs.Settings)
 SaveManager:LoadAutoloadConfig()
 
-Library:Notify("Steal An Egg v9 new-speed-only | PWO", 3)
-print("PWO Steal An Egg v9 loaded")
+task.spawn(function()
+    task.wait(1)
+    pcall(function() setSpeedBypass(true) end)
+end)
+Library:Notify("Steal An Egg v10 auto-bypass | PWO", 3)
+print("PWO Steal An Egg v10 loaded")
