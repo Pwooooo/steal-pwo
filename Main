@@ -1,4 +1,4 @@
--- Steal An Egg | PWO (Linoria) v8 - speed.txt bypass (__newindex lock + sampler blind)
+-- Steal An Egg | PWO (Linoria) v9 - new speed code only (old enforcer deleted)
 -- Fixes: trap-eject + guard kills. Collect = guard-distance precheck, instant in-out, IsTrapped sentinel.
 -- Place: Steal An Egg (107778070777162)
 
@@ -91,7 +91,7 @@ local function setSpeedBypass(on)
             pcall(function() Library:Notify("Bypass needs: " .. table.concat(missing, ", "), 3) end)
             return
         end
-        speedBypassLock = math.max(tonumber(walkSpeedValue) or 16, tonumber(travelSpeedValue) or 16, 500)
+        speedBypassLock = math.max(tonumber(speedValue) or 500, 500)
         if not speedBypassOldIndex then
             local ncc = newcclosure or function(fn) return fn end
             local function newIndex(self, key, value)
@@ -204,9 +204,8 @@ local Tabs = {
     Settings = Window:AddTab("Settings"),
 }
 
--- State
-local walkSpeedValue = 16
-local enforceSpeed = true
+-- State (v9: single speed source = new bypass lock; old enforcer deleted)
+local speedValue = 500
 local flyEnabled = false
 local flySpeed = 60
 local flyGyro, flyVel, flyConn = nil, nil, nil
@@ -279,16 +278,6 @@ local function nearestGuardDist(pos, guards)
     return nd
 end
 
--- Speed enforcer (Heartbeat, no signal recursion)
-RunService.Heartbeat:Connect(function()
-    if speedBypassActive then return end
-    if enforceSpeed and walkSpeedValue ~= 16 then
-        local _, hum = getChar()
-        if hum and hum.WalkSpeed ~= walkSpeedValue then
-            hum.WalkSpeed = walkSpeedValue
-        end
-    end
-end)
 
 -- Fly
 local function startFly()
@@ -382,7 +371,7 @@ local function walkTo(targetPos, timeoutS)
     for _, pt in ipairs(char:GetDescendants()) do
         if pt:IsA("BasePart") then origCollide[pt] = pt.CanCollide pt.CanCollide = false end
     end
-    local travelSpeed = math.max(walkSpeedValue, travelSpeedValue)
+    local travelSpeed = speedBypassActive and speedBypassLock or travelSpeedValue
     hum.WalkSpeed = travelSpeed
     local t0 = os.clock()
     local lastD, stuckT = math.huge, os.clock()
@@ -732,23 +721,17 @@ LeftMain:AddToggle("KillAura", {
 local RightMain = Tabs.Main:AddRightGroupbox("Movement")
 RightMain:AddSlider("WalkSpeed", {
     Text = "Speed Changer",
-    Default = 16,
+    Default = 500,
     Min = 16,
-    Max = 300,
+    Max = 500,
     Rounding = 0,
     Suffix = " ws",
     Callback = function(v)
-        walkSpeedValue = v
-        if speedBypassActive then speedBypassLock = math.max(tonumber(walkSpeedValue) or 16, tonumber(travelSpeedValue) or 16, 500) end
+        speedValue = v
+        speedBypassLock = math.max(v, 16)
         local _, hum = getChar()
-        if hum then hum.WalkSpeed = v end
+        if hum then hum.WalkSpeed = speedBypassLock end
     end,
-})
-RightMain:AddToggle("EnforceSpeed", {
-    Text = "Enforce Speed",
-    Default = true,
-    Tooltip = "Keeps WalkSpeed locked (game resets it)",
-    Callback = function(v) enforceSpeed = v end,
 })
 RightMain:AddToggle("SpeedBypass", {
     Text = "Speed Bypass (hook)",
@@ -767,7 +750,6 @@ RightMain:AddSlider("TravelSpeed", {
     Rounding = 0,
     Callback = function(v)
         travelSpeedValue = v
-        if speedBypassActive then speedBypassLock = math.max(tonumber(walkSpeedValue) or 16, tonumber(travelSpeedValue) or 16, 500) end
     end,
 })
 RightMain:AddDivider()
@@ -991,5 +973,5 @@ ThemeManager:ApplyToTab(Tabs.Settings)
 SaveManager:BuildConfigSection(Tabs.Settings)
 SaveManager:LoadAutoloadConfig()
 
-Library:Notify("Steal An Egg v8 speed-bypass | PWO", 3)
-print("PWO Steal An Egg v8 loaded")
+Library:Notify("Steal An Egg v9 new-speed-only | PWO", 3)
+print("PWO Steal An Egg v9 loaded")
