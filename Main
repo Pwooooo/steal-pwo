@@ -1,4 +1,4 @@
--- Steal An Egg | PWO (Linoria) v10 - speed bypass auto-on (no toggle)
+-- Steal An Egg | PWO (Linoria) v11 - yayspeed.txt only + speed ON/OFF button
 -- Fixes: trap-eject + guard kills. Collect = guard-distance precheck, instant in-out, IsTrapped sentinel.
 -- Place: Steal An Egg (107778070777162)
 
@@ -91,7 +91,7 @@ local function setSpeedBypass(on)
             pcall(function() Library:Notify("Bypass needs: " .. table.concat(missing, ", "), 3) end)
             return
         end
-        speedBypassLock = math.max(tonumber(speedValue) or 500, 500)
+        speedBypassLock = tonumber(speedValue) or 500
         if not speedBypassOldIndex then
             local ncc = newcclosure or function(fn) return fn end
             local function newIndex(self, key, value)
@@ -728,10 +728,16 @@ RightMain:AddSlider("WalkSpeed", {
     Suffix = " ws",
     Callback = function(v)
         speedValue = v
-        speedBypassLock = math.max(v, 16)
+        speedBypassLock = v
         local _, hum = getChar()
         if hum then hum.WalkSpeed = speedBypassLock end
     end,
+})
+RightMain:AddToggle("SpeedBypassBtn", {
+    Text = "Speed Bypass",
+    Default = true,
+    Tooltip = "ON/OFF for the speed bypass (auto-enabled on load)",
+    Callback = function(v) setSpeedBypass(v) end,
 })
 RightMain:AddButton("Disable Knockback", function()
     disableKnockback()
@@ -972,5 +978,5 @@ task.spawn(function()
     task.wait(1)
     pcall(function() setSpeedBypass(true) end)
 end)
-Library:Notify("Steal An Egg v10 auto-bypass | PWO", 3)
-print("PWO Steal An Egg v10 loaded")
+Library:Notify("Steal An Egg v11 speed toggle | PWO", 3)
+print("PWO Steal An Egg v11 loaded")
