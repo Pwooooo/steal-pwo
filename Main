@@ -1,4 +1,4 @@
--- Steal An Egg | PWO (Linoria) v7 - sources merged + real-prompt carry (proven live)
+-- Steal An Egg | PWO (Linoria) v8 - speed.txt bypass (__newindex lock + sampler blind)
 -- Fixes: trap-eject + guard kills. Collect = guard-distance precheck, instant in-out, IsTrapped sentinel.
 -- Place: Steal An Egg (107778070777162)
 
@@ -50,81 +50,118 @@ local function guardStat(area)
     return 100, 5
 end
 
--- v7 bypasses merged from sources/: validate hook + knockback disconnect
-local function gcFindValidate()
-    local exact, fallback, fallbackDesc = nil, nil, nil
-    pcall(function()
-        for _, f in next, getgc() do
-            if typeof(f) == 'function' and islclosure and islclosure(f) then
-                local okUv, upvs = pcall(debug.getupvalues, f)
-                if okUv and type(upvs) == 'table' then
-                    local nuv = 0
-                    local hasHum = false
-                    for _, uv in pairs(upvs) do
-                        nuv = nuv + 1
-                        if type(uv) == 'table' and rawget(uv, 'Humanoid') then hasHum = true end
-                    end
-                    if hasHum then
-                        local okLn, line = pcall(debug.info, f, 'l')
-                        if nuv == 19 and okLn and line == 605 then
-                            exact = f
-                            break
-                        elseif not fallback and nuv >= 17 and nuv <= 20 then
-                            local score = 0
-                            local okC, consts = pcall(debug.getconstants, f)
-                            if okC and type(consts) == 'table' then
-                                for _, c in ipairs(consts) do
-                                    if type(c) == 'string' and (c:find('strict') or c:find('econcile') or c:find('alid')) then
-                                        score = score + 1
-                                    end
-                                end
-                            end
-                            local okN, nm = pcall(debug.info, f, 'n')
-                            fallback = f
-                            fallbackDesc = 'upv=' .. nuv .. ' line=' .. tostring(okLn and line) .. ' fn=' .. tostring(okN and nm) .. ' hints=' .. score
-                        end
-                    end
+-- v8 speed bypass (sources/speed.txt): __newindex lock + ContentCatalog.Runtime sampler blind
+local speedBypassLock = 500
+local speedBypassOldIndex = nil
+local speedBypassSamplerOrig = {}
+local speedBypassConn = nil
+local speedBypassActive = false
+
+local function speedBypassFindSamplers()
+    local out = {}
+    local ok, gc = pcall(function() return getgc() end)
+    if not ok or type(gc) ~= "table" then return out end
+    for _, fn in next, gc do
+        if typeof(fn) == "function" and islclosure and islclosure(fn) then
+            local okS, src = pcall(debug.info, fn, "s")
+            if okS and type(src) == "string" and src:find("ContentCatalog%.Runtime", 1, true) then
+                local okA, params = pcall(debug.info, fn, "a")
+                local okU, ups = pcall(debug.getupvalues, fn)
+                if okA and params == 3 and okU and type(ups) == "table" and #ups == 5 then
+                    table.insert(out, fn)
                 end
             end
         end
-    end)
-    if exact then return exact, 'exact(19@605)' end
-    return fallback, fallbackDesc
+    end
+    return out
 end
 
 local function setSpeedBypass(on)
     speedBypassOn = on
     if on then
-        if typeof(getgc) ~= 'function' or typeof(hookfunction) ~= 'function' or typeof(islclosure) ~= 'function' then
-            Library:Notify('Bypass needs getgc + hookfunction + islclosure', 3)
+        local missing = {}
+        if type(hookmetamethod) ~= "function" then table.insert(missing, "hookmetamethod") end
+        if type(hookfunction) ~= "function" then table.insert(missing, "hookfunction") end
+        if type(getgc) ~= "function" then table.insert(missing, "getgc") end
+        if type(islclosure) ~= "function" then table.insert(missing, "islclosure") end
+        if type(debug) ~= "table" or type(debug.info) ~= "function" or type(debug.getupvalues) ~= "function" then
+            table.insert(missing, "debug.info/getupvalues")
+        end
+        if #missing > 0 then
+            pcall(function() Library:Notify("Bypass needs: " .. table.concat(missing, ", "), 3) end)
             return
         end
+        speedBypassLock = math.max(tonumber(walkSpeedValue) or 16, tonumber(travelSpeedValue) or 16, 500)
+        if not speedBypassOldIndex then
+            local ncc = newcclosure or function(fn) return fn end
+            local function newIndex(self, key, value)
+                if speedBypassActive and key == "WalkSpeed" and value ~= speedBypassLock then
+                    local okC, char = pcall(function() return game:GetService("Players").LocalPlayer.Character end)
+                    if okC and char then
+                        local okH, hum = pcall(function() return char:FindFirstChildOfClass("Humanoid") end)
+                        if okH and hum and self == hum then
+                            return
+                        end
+                    end
+                end
+                return speedBypassOldIndex(self, key, value)
+            end
+            local okH, old = pcall(function()
+                return hookmetamethod(game, "__newindex", ncc(newIndex))
+            end)
+            if okH and old then
+                speedBypassOldIndex = old
+            end
+        end
+        speedBypassActive = true
         local nlc = newlclosure or function(fn) return fn end
-        local target, desc = gcFindValidate()
-        if not target then Library:Notify('Validate fn not found for this build', 3) return end
-        local okUv, v7 = pcall(debug.getupvalue, target, 2)
-        if not okUv or not v7 then Library:Notify('Validate upvalue missing', 3) return end
-        local orig = nil
-        local okH = pcall(function()
-            orig = hookfunction(v7, nlc(function(p1, p2)
-                if p2 and typeof(p2) == 'table' then pcall(setmetatable, p2, {}) end
-                return orig(p1, p2)
-            end))
+        local blinded = 0
+        for _, fn in ipairs(speedBypassFindSamplers()) do
+            if not speedBypassSamplerOrig[fn] then
+                local orig = nil
+                local okH = pcall(function()
+                    orig = hookfunction(fn, nlc(function(a, b, c)
+                        local sample = orig(a, b, c)
+                        if type(sample) == "table" and sample.WalkSpeed and sample.Position and sample.Timestamp then
+                            sample.WalkSpeed = 100000
+                        end
+                        return sample
+                    end))
+                end)
+                if okH and type(orig) == "function" then
+                    speedBypassSamplerOrig[fn] = orig
+                    blinded = blinded + 1
+                end
+            end
+        end
+        if speedBypassConn then pcall(function() speedBypassConn:Disconnect() end) end
+        speedBypassConn = RunService.Heartbeat:Connect(function()
+            if not speedBypassActive then return end
+            local char = LocalPlayer.Character
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            if hum and hum.WalkSpeed ~= speedBypassLock then
+                hum.WalkSpeed = speedBypassLock
+            end
         end)
-        if okH and orig then
-            bypassV7ref = v7
-            bypassOrigValidate = orig
-            Library:Notify('Speed Bypass: ON (' .. tostring(desc) .. ')', 3)
-        else
-            Library:Notify('Speed Bypass hook failed', 3)
-        end
+        pcall(function()
+            if blinded > 0 then
+                Library:Notify(("Speed Bypass: ON (WalkSpeed %d, %d samplers blinded)"):format(speedBypassLock, blinded), 3)
+            else
+                Library:Notify(("Speed Bypass: ON (WalkSpeed %d, sampler not found - expect rubber-band)"):format(speedBypassLock), 3)
+            end
+        end)
     else
-        if bypassV7ref and bypassOrigValidate then
-            pcall(hookfunction, bypassV7ref, bypassOrigValidate)
-            bypassV7ref = nil
-            bypassOrigValidate = nil
+        speedBypassActive = false
+        if speedBypassConn then pcall(function() speedBypassConn:Disconnect() end) speedBypassConn = nil end
+        if speedBypassOldIndex then
+            pcall(function() hookmetamethod(game, "__newindex", speedBypassOldIndex) end)
+            speedBypassOldIndex = nil
         end
-        Library:Notify('Speed Bypass: OFF (hook restored)', 2)
+        for fn, orig in pairs(speedBypassSamplerOrig) do
+            pcall(function() hookfunction(fn, orig) end)
+        end
+        table.clear(speedBypassSamplerOrig)
+        pcall(function() Library:Notify("Speed Bypass: OFF (hooks restored)", 2) end)
     end
 end
 
@@ -190,8 +227,7 @@ local killLast = 0
 local autoBuy = false
 local autoBuyThread = nil
 local speedBypassOn = false
-local bypassV7ref = nil
-local bypassOrigValidate = nil
+local speedBypassSamplerNote = nil
 local knockbackOff = false
 local travelSpeedValue = 430
 local targetMode = 'Nearest'
@@ -245,6 +281,7 @@ end
 
 -- Speed enforcer (Heartbeat, no signal recursion)
 RunService.Heartbeat:Connect(function()
+    if speedBypassActive then return end
     if enforceSpeed and walkSpeedValue ~= 16 then
         local _, hum = getChar()
         if hum and hum.WalkSpeed ~= walkSpeedValue then
@@ -702,6 +739,7 @@ RightMain:AddSlider("WalkSpeed", {
     Suffix = " ws",
     Callback = function(v)
         walkSpeedValue = v
+        if speedBypassActive then speedBypassLock = math.max(tonumber(walkSpeedValue) or 16, tonumber(travelSpeedValue) or 16, 500) end
         local _, hum = getChar()
         if hum then hum.WalkSpeed = v end
     end,
@@ -727,7 +765,10 @@ RightMain:AddSlider("TravelSpeed", {
     Min = 100,
     Max = 500,
     Rounding = 0,
-    Callback = function(v) travelSpeedValue = v end,
+    Callback = function(v)
+        travelSpeedValue = v
+        if speedBypassActive then speedBypassLock = math.max(tonumber(walkSpeedValue) or 16, tonumber(travelSpeedValue) or 16, 500) end
+    end,
 })
 RightMain:AddDivider()
 RightMain:AddToggle("Fly", {
@@ -950,5 +991,5 @@ ThemeManager:ApplyToTab(Tabs.Settings)
 SaveManager:BuildConfigSection(Tabs.Settings)
 SaveManager:LoadAutoloadConfig()
 
-Library:Notify("Steal An Egg v7 merged | PWO", 3)
-print("PWO Steal An Egg v7 loaded")
+Library:Notify("Steal An Egg v8 speed-bypass | PWO", 3)
+print("PWO Steal An Egg v8 loaded")
